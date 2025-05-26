@@ -1,60 +1,71 @@
 import random
+import math
 from collections import defaultdict
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
 
 
-def read_students(file_path):
-    with open(file_path, 'r', encoding='utf-8') as file:
-        students = [' '.join(line.strip().split()) for line in file.readlines() if line.strip()]
-    return sorted(students)
+def read_questions_from_excel(file_path, max_semester):
+    """
+    Считывает вопросы из Excel файла с учетом семестра и типа вопросов.
+
+    :param file_path: путь к Excel файлу
+    :param max_semester: максимальный номер семестра для фильтрации вопросов
+    :return: словарь {тема: [(вопрос, тип)]}
+    """
+    df = pd.read_excel(file_path, header=None, names=["Question", "Topic", "Semester", "Type"])
+    filtered_df = df[df["Semester"] <= max_semester]
+    questions_by_topic = defaultdict(list)
+    for _, row in filtered_df.iterrows():
+        questions_by_topic[row["Topic"]].append((row["Question"], row["Type"]))
+    return questions_by_topic
 
 
-def read_questions_from_excel(file_path):
-    df = pd.read_excel(file_path, header=None)
-    return {index + 1: row[0] for index, row in df.iterrows()}
+def generate_variants(students, all_questions_by_topic, questions_per_topic):
+    """
+    Генерирует варианты для студентов с учетом теоретических и практических вопросов.
 
-
-def generate_student_questions(students, total_questions, questions_per_student):
-    if len(students) * questions_per_student > total_questions * 3:
-        raise ValueError("Недостаточно вопросов для всех студентов с учетом повторений.")
-
-    questions = list(range(1, total_questions + 1))
+    :param students: список студентов
+    :param all_questions_by_topic: словарь {тема: [(вопрос, тип)]}
+    :param questions_per_topic: словарь {тема: количество вопросов}
+    :return: словарь {студент: [(вопрос, тип)]}
+    """
+    student_variants = defaultdict(list)
     question_count = defaultdict(int)
-    students_questions = defaultdict(list)
+
+    max_repeats_by_topic = {
+        topic: math.ceil(len(students) / len(all_questions_by_topic[topic])) + 2
+        for topic in all_questions_by_topic
+    }
 
     for student in students:
         assigned_questions = set()
-        while len(assigned_questions) < questions_per_student:
-            question = random.choice(questions)
-            if question_count[question] < 3 and question not in assigned_questions:
-                assigned_questions.add(question)
+        for topic, num_questions in questions_per_topic.items():
+            questions_by_topic = set()
+
+            while len(questions_by_topic) < num_questions:
+                question, question_type = random.choice(all_questions_by_topic[topic])
+
+                # Проверяем, не превышено ли максимальное количество повторений для вопроса
+                if question_count[question] >= max_repeats_by_topic[topic]:
+                    all_questions_by_topic[topic] = [
+                        q for q in all_questions_by_topic[topic] if q[0] != question
+                    ]
+
+                if not all_questions_by_topic[topic]:
+                    raise ValueError(f"Not enough questions in the topic '{topic}' to assign {num_questions} questions.")
+
+                questions_by_topic.add((question, question_type))
                 question_count[question] += 1
-        students_questions[student] = list(assigned_questions)
 
-    return students_questions
+            assigned_questions.update(questions_by_topic)
+
+        student_variants[student] = list(assigned_questions)
+
+    return student_variants
 
 
-def save_to_excel(students_questions, file_path):
-    df = pd.DataFrame.from_dict(students_questions, orient='index',
-                                columns=[f'Question {i + 1}' for i in range(len(next(iter(students_questions.values()))))])
-    df.index.name = 'Student'
-    df.reset_index(inplace=True)
-
-    df.to_excel(file_path, index=False)
-    wb = load_workbook(file_path)
-    ws = wb.active
-
-    # Formatting
-    for col in ws.columns:
-        max_length = max(len(str(cell.value)) for cell in col)
-        ws.column_dimensions[col[0].column_letter].width = max_length + 2
-
-    fill = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
-    for i, row in enumerate(ws.iter_rows(min_row=2), start=2):
-        if i % 2 == 0:
-            for cell in row:
-                cell.fill = fill
-
-    wb.save(file_path)
+def save_to_excel(student_variants, output_path):
+    df = pd.DataFrame.from_dict(student_variants, orient='index').reset_index()
+    df.columns = ['Student'] + [f'Question {i+1}' for i in range(len(df.columns) - 1)]
+    df.to_excel(output_path, index=False)
+    print(f"Variants saved to {output_path}")
